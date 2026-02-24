@@ -1328,13 +1328,59 @@ proxy.on("error", (err, _req, res) => {
   }
 });
 
+// --- Channel webhook handler ---
+// Forward webhook requests directly to the gateway via fetch() instead of
+// http-proxy. This avoids timeout issues caused by the proxy not receiving
+// a response from the gateway's webhook handler. We respond 200 to the
+// caller (LINE, Telegram, etc.) immediately, then forward asynchronously.
+app.post("/:channel/webhook", async (req, res) => {
+  const channel = req.params.channel;
+  console.log(`[webhook] incoming POST /${channel}/webhook`);
+
+  if (!isConfigured()) {
+    return res.status(503).json({ error: "not configured" });
+  }
+
+  try {
+    await ensureGatewayRunning();
+  } catch {
+    return res.status(503).json({ error: "gateway not ready" });
+  }
+
+  // Build headers to forward (include LINE signature, content-type, etc.)
+  const fwdHeaders = {
+    "content-type": req.headers["content-type"] || "application/json",
+  };
+  // Forward channel-specific signature headers
+  if (req.headers["x-line-signature"]) {
+    fwdHeaders["x-line-signature"] = req.headers["x-line-signature"];
+  }
+  // Add gateway auth token
+  if (OPENCLAW_GATEWAY_TOKEN) {
+    fwdHeaders["authorization"] = `Bearer ${OPENCLAW_GATEWAY_TOKEN}`;
+  }
+
+  const body = JSON.stringify(req.body);
+
+  // Fire-and-forget: forward to gateway, don't wait for response
+  fetch(`${GATEWAY_TARGET}/${channel}/webhook`, {
+    method: "POST",
+    headers: fwdHeaders,
+    body,
+    signal: AbortSignal.timeout(30_000),
+  })
+    .then((r) => console.log(`[webhook] gateway responded ${r.status} for /${channel}/webhook`))
+    .catch((err) => console.error(`[webhook] gateway error for /${channel}/webhook:`, err.message || err));
+
+  // Respond 200 immediately so LINE/Telegram don't timeout
+  return res.status(200).json({ status: "ok" });
+});
+
 // --- Dashboard password protection ---
 // Require the same SETUP_PASSWORD for the entire Control UI dashboard,
 // not just the /setup routes.  Healthcheck is excluded so Railway probes work.
 function requireDashboardAuth(req, res, next) {
   if (req.path === "/healthz" || req.path === "/setup/healthz") return next();
-  // Allow webhook endpoints through without auth (LINE, Telegram, etc.)
-  if (/^\/[a-z]+\/webhook\b/.test(req.path)) return next();
   if (!SETUP_PASSWORD) return next(); // no password configured → open
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
@@ -1384,11 +1430,7 @@ app.use(requireDashboardAuth, async (req, res) => {
     }
   }
 
-  // Skip gateway token injection for webhook endpoints — channel plugins
-  // authenticate via their own mechanism (e.g. X-Line-Signature).
-  if (!/^\/[a-z]+\/webhook\b/.test(req.path)) {
-    attachGatewayAuthHeader(req);
-  }
+  attachGatewayAuthHeader(req);
   return proxy.web(req, res, { target: GATEWAY_TARGET });
 });
 
