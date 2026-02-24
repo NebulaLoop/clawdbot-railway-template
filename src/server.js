@@ -1333,6 +1333,8 @@ proxy.on("error", (err, _req, res) => {
 // not just the /setup routes.  Healthcheck is excluded so Railway probes work.
 function requireDashboardAuth(req, res, next) {
   if (req.path === "/healthz" || req.path === "/setup/healthz") return next();
+  // Allow webhook endpoints through without auth (LINE, Telegram, etc.)
+  if (/^\/[a-z]+\/webhook\b/.test(req.path)) return next();
   if (!SETUP_PASSWORD) return next(); // no password configured → open
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
