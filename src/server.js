@@ -1384,7 +1384,11 @@ app.use(requireDashboardAuth, async (req, res) => {
     }
   }
 
-  attachGatewayAuthHeader(req);
+  // Skip gateway token injection for webhook endpoints — channel plugins
+  // authenticate via their own mechanism (e.g. X-Line-Signature).
+  if (!/^\/[a-z]+\/webhook\b/.test(req.path)) {
+    attachGatewayAuthHeader(req);
+  }
   return proxy.web(req, res, { target: GATEWAY_TARGET });
 });
 
