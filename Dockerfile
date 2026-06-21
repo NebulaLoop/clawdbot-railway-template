@@ -54,6 +54,16 @@ RUN apt-get update \
 # `openclaw update` expects pnpm. Provide it in the runtime image.
 RUN corepack enable && corepack prepare pnpm@10.23.0 --activate
 
+# --- Headroom context-compression proxy (Anthropic token savings) ---
+# Installed into an isolated venv so it never interferes with the Node/openclaw
+# runtime. Fail-open: if the install fails, the image still builds and the bot
+# runs directly against Anthropic (see src/start.sh, which gates on readiness).
+ENV HEADROOM_UPDATE_CHECK=off
+RUN python3 -m venv /opt/headroom \
+  && /opt/headroom/bin/pip install --no-cache-dir --upgrade pip \
+  && /opt/headroom/bin/pip install --no-cache-dir "headroom-ai[proxy]" \
+  || echo "[build] headroom install failed; proxy will be disabled at runtime"
+
 # Persist user-installed tools by default by targeting the Railway volume.
 # - npm global installs -> /data/npm
 # - pnpm global installs -> /data/pnpm (binaries) + /data/pnpm-store (store)
@@ -86,4 +96,4 @@ EXPOSE 8080
 
 # Ensure PID 1 reaps zombies and forwards signals.
 ENTRYPOINT ["tini", "--"]
-CMD ["node", "src/server.js"]
+CMD ["bash", "src/start.sh"]
