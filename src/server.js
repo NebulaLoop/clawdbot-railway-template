@@ -297,7 +297,11 @@ function requireSetupAuth(req, res, next) {
 
 const app = express();
 app.disable("x-powered-by");
-app.use(express.json({ limit: "1mb" }));
+// Capture the raw request body so channel webhook signatures (e.g. LINE's
+// x-line-signature, an HMAC over the exact raw bytes) can still be validated
+// downstream. express.json() otherwise drains the stream and only leaves the
+// parsed object, whose re-serialization does not match the bytes LINE signed.
+app.use(express.json({ limit: "1mb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // Minimal health endpoint for Railway.
 app.get("/setup/healthz", (_req, res) => res.json({ ok: true }));
@@ -1360,7 +1364,12 @@ app.post("/:channel/webhook", async (req, res) => {
     fwdHeaders["authorization"] = `Bearer ${OPENCLAW_GATEWAY_TOKEN}`;
   }
 
-  const body = JSON.stringify(req.body);
+  // Forward the EXACT raw bytes we received. Re-serializing via
+  // JSON.stringify(req.body) reorders/reformats the payload and breaks webhook
+  // signature verification (LINE returns 401 -> messages are silently dropped).
+  const body = req.rawBody && req.rawBody.length
+    ? req.rawBody
+    : Buffer.from(JSON.stringify(req.body ?? {}));
 
   // Fire-and-forget: forward to gateway, don't wait for response
   fetch(`${GATEWAY_TARGET}/${channel}/webhook`, {
